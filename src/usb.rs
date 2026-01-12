@@ -148,6 +148,36 @@ async fn deviceConfig() -> DeviceConfig<'static>
 	config
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum CdcRequest
+{
+	SetLineCoding = 0x20,
+	GetLineCoding = 0x21,
+	SetControlLineState = 0x22,
+}
+
+impl From<u8> for CdcRequest
+{
+	fn from(value: u8) -> Self
+	{
+		match value
+		{
+			0x20 => Self::SetLineCoding,
+			0x21 => Self::GetLineCoding,
+			0x22 => Self::SetControlLineState,
+			_ => panic!("Invalid CDC ACM request type for conversion"),
+		}
+	}
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum CdcNotification
+{
+	SerialState = 0x20,
+}
+
 struct SerialHandler
 {
 	controlInterface: u16
@@ -168,6 +198,20 @@ impl SerialHandler
 	{
 		self.controlInterface = controlInterface.0 as u16;
 	}
+
+	fn controlLineState(&mut self, _state: u16)
+	{
+	}
+
+	fn encodingToData(&self, data: &mut [u8]) -> Option<usize>
+	{
+		None
+	}
+
+	fn encodingFromData(&mut self, buffer: &[u8]) -> Option<()>
+	{
+		None
+	}
 }
 
 impl Handler for SerialHandler
@@ -181,7 +225,15 @@ impl Handler for SerialHandler
 			return None
 		}
 
-		None
+		match CdcRequest::from(packet.request)
+		{
+			CdcRequest::GetLineCoding =>
+			{
+				self.encodingToData(data)
+					.map(|length| control::InResponse::Accepted(&data[0..length]))
+			}
+			_ => None
+		}
 	}
 
 	fn control_out(&mut self, packet: Request, data: &[u8]) -> Option<control::OutResponse>
@@ -193,6 +245,19 @@ impl Handler for SerialHandler
 			return None
 		}
 
-		None
+		match CdcRequest::from(packet.request)
+		{
+			CdcRequest::SetControlLineState =>
+			{
+				self.controlLineState(packet.value);
+				Some(control::OutResponse::Accepted)
+			}
+			CdcRequest::SetLineCoding =>
+			{
+				self.encodingFromData(data)
+					.map(|()| control::OutResponse::Accepted)
+			}
+			_ => None
+		}
 	}
 }
