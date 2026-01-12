@@ -2,6 +2,8 @@
 
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::{Receiver, Sender};
 use embassy_usb::control::{self, Request};
 use embassy_usb::driver::{Direction, EndpointAddress};
 use embassy_usb::types::InterfaceNumber;
@@ -10,6 +12,7 @@ use static_cell::ConstStaticCell;
 
 use crate::resources::UsbResources;
 use crate::serial_number::serialNumber;
+use crate::types::{TransmitRequest, ReceiveRequest};
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -52,7 +55,12 @@ static CONTROL_BUFFER: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64
 static CONFIGURATION_DESCRIPTOR: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
 
 #[embassy_executor::task]
-pub async fn usbTask(usb: UsbResources)
+pub async fn usbTask
+(
+	usb: UsbResources,
+	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
+	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
+)
 {
 	let mut config = OtgConfig::default();
 	// We have VBus hooked up on this hardware, so do this.
@@ -74,7 +82,7 @@ pub async fn usbTask(usb: UsbResources)
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new();
+	let mut serialHandler = SerialHandler::new(transmitChannel, receiveChannel);
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -199,17 +207,24 @@ enum CdcNotification
 
 struct SerialHandler
 {
-	controlInterface: u16
+	controlInterface: u16,
+	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
+	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 }
 
 impl SerialHandler
 {
-	pub fn new() -> Self
+	pub fn new(
+		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
+		receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
+	) -> Self
 	{
 		// Bring up a new serial events handler in idle state
 		Self
 		{
 			controlInterface: 255,
+			transmitChannel,
+			receiveChannel,
 		}
 	}
 
