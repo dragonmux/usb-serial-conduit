@@ -1,0 +1,34 @@
+[package]
+name = "usb-serial-conduit"
+version = "0.1.0"
+license = "BSD-3-Clause"
+authors = ["Rachel Mant <git@dragonmux.network>"]
+edition = "2024"
+
+[dependencies]
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = ["defmt", "memory-x", "stm32u585ci", "unstable-pac"] }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", features = ["defmt"] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = ["defmt", "arch-cortex-m", "executor-thread"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
+
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+assign-resources = "0.5.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+static_cell = "2.1.1"
+
+[[bin]]
+name = "usb-serial-conduit"
+test = false
+doctest = false
+bench = false
+
+# When fixing things inside embassy it is useful to use the local checked out version sometimes ;)
+[patch."https://github.com/embassy-rs/embassy"]
+embassy-stm32 = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-stm32" }
+embassy-usb = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb" }
+embassy-usb-driver = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb-driver" }
+embassy-usb-synopsys-otg = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb-synopsys-otg" }
