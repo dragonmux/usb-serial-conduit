@@ -12,6 +12,28 @@ use crate::serial_number::serialNumber;
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
 
+/// Communications Device Class Device
+const USB_CLASS_CDC: u8 = 0x02;
+/// Data interface
+const USB_CLASS_DATA: u8 = 0x0a;
+/// Miscellaneous Device
+const USB_CLASS_MISC: u8 = 0xef;
+
+/// CDC ACM subclass device
+const CDC_SUBCLASS_ACM: u8 = 2;
+/// Non-specific CDC protocol (control)
+const CDC_PROTOCOL_NONE: u8 = 0;
+
+/// Non-specific data subclass
+const DATA_SUBCLASS_NONE: u8 = 0;
+/// Non-specific data protocol
+const DATA_PROTOCOL_NONE: u8 = 0;
+
+/// Common Class
+const MISC_SUBCLASS_COMMON: u8 = 2;
+// Interface Association
+const MISC_PROTOCOL_IAD: u8 = 1;
+
 bind_interrupts!
 (
 	struct UsbIrqs
@@ -50,7 +72,7 @@ pub async fn usbTask(usb: UsbResources)
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new();
+	let mut serialHandler = SerialHandler::new(0);
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -66,6 +88,36 @@ pub async fn usbTask(usb: UsbResources)
 	// Register the serial handler so we can deal with CDC ACM state requests
 	builder.handler(&mut serialHandler);
 
+	// Define a new "function" to be the root of the CDC-ACM support
+	let mut serialFunction = builder.function
+	(
+		USB_CLASS_CDC,
+		CDC_SUBCLASS_ACM,
+		CDC_PROTOCOL_NONE
+	);
+	// Now define the control interface
+	let mut serialControlInterface = serialFunction.interface();
+	serialControlInterface.alt_setting
+	(
+		USB_CLASS_CDC,
+		CDC_SUBCLASS_ACM,
+		CDC_PROTOCOL_NONE,
+		None
+	);
+
+	// Followed by the data interface
+	let mut serialDataInterface = serialFunction.interface();
+	serialDataInterface.alt_setting
+	(
+		USB_CLASS_DATA,
+		DATA_SUBCLASS_NONE,
+		DATA_PROTOCOL_NONE,
+		None
+	);
+
+	// Drop our reference to the function so the builder can work
+	drop(serialFunction);
+
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
 	usbDevice.run().await
@@ -77,10 +129,10 @@ async fn deviceConfig() -> DeviceConfig<'static>
 	let mut config = DeviceConfig::new(VID, PID);
 	// We're a USB 2.1 (USB 3 compliance over USB LS/FS/HS) device, meaning we can have BOS
 	config.bcd_usb = UsbVersion::TwoOne;
-	// Device is described in the interface descriptor, not here
-	config.device_class = 0;
-	config.device_sub_class = 0;
-	config.device_protocol = 0;
+	// Device is a misc IAD-based device
+	config.device_class = USB_CLASS_MISC;
+	config.device_sub_class = MISC_SUBCLASS_COMMON;
+	config.device_protocol = MISC_PROTOCOL_IAD;
 	// Use a 64 byte max packet size for EP0 (max for FS)
 	config.max_packet_size_0 = 64;
 	// BCD encoded device version
@@ -89,8 +141,6 @@ async fn deviceConfig() -> DeviceConfig<'static>
 	config.manufacturer = Some("dragonmux");
 	config.product = Some("BMD USB serial conduit");
 	config.serial_number = Some(serialNumber().await);
-	// We do not want or need to use interface association descriptors
-	config.composite_with_iads = false;
 	// Allow us to draw up to 100mA
 	config.max_power = 100;
 	config
@@ -98,15 +148,17 @@ async fn deviceConfig() -> DeviceConfig<'static>
 
 struct SerialHandler
 {
+	interface: u16,
 }
 
 impl SerialHandler
 {
-	pub fn new() -> Self
+	pub fn new(interface: u16) -> Self
 	{
 		// Bring up a new serial events handler in idle state
 		Self
 		{
+			interface
 		}
 	}
 }
@@ -115,11 +167,25 @@ impl Handler for SerialHandler
 {
 	fn control_in<'a>(&'a mut self, packet: Request, data: &'a mut [u8]) -> Option<control::InResponse<'a>>
 	{
+		if packet.recipient != control::Recipient::Interface ||
+			packet.request_type != control::RequestType::Class ||
+			packet.index != self.interface
+		{
+			return None
+		}
+
 		None
 	}
 
 	fn control_out(&mut self, packet: Request, data: &[u8]) -> Option<control::OutResponse>
 	{
+		if packet.recipient != control::Recipient::Interface ||
+			packet.request_type != control::RequestType::Class ||
+			packet.index != self.interface
+		{
+			return None
+		}
+
 		None
 	}
 }
