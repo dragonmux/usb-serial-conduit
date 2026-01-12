@@ -5,6 +5,7 @@
 #![no_main]
 
 mod resources;
+mod serial;
 mod serial_number;
 mod usb;
 
@@ -15,6 +16,7 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use crate::resources::resources::*;
+use crate::serial::serialTask;
 use crate::serial_number::readSerialNumber;
 use crate::usb::usbTask;
 
@@ -30,4 +32,5 @@ async fn main(spawner: Spawner)
 
     // spawn the task to handle USB for us
     spawner.spawn(usbTask(resources.usb).unwrap());
+    spawner.spawn(serialTask(resources.uart).unwrap());
 }

@@ -50,5 +50,5 @@ pub fn readSerialNumber()
 
 pub async fn serialNumber() -> &'static str
 {
-	unsafe { SERIAL_NUMBER.get().await.as_str() }
+	SERIAL_NUMBER.get().await.as_str()
 }
