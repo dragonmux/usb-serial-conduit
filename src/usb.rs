@@ -3,6 +3,7 @@
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
 use embassy_usb::control::{self, Request};
+use embassy_usb::driver::{Direction, EndpointAddress};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use static_cell::ConstStaticCell;
@@ -95,7 +96,7 @@ pub async fn usbTask(usb: UsbResources)
 	);
 	// Now define the control interface
 	let mut serialControlInterface = serialFunction.interface();
-	serialControlInterface.alt_setting
+	let mut serialControlInterface = serialControlInterface.alt_setting
 	(
 		USB_CLASS_CDC,
 		CDC_SUBCLASS_ACM,
@@ -103,15 +104,33 @@ pub async fn usbTask(usb: UsbResources)
 		None
 	);
 	serialHandler.controlInterface(serialControlInterface.interface_number());
+	// Extract the endpoint for sending notifications for this control interface
+	let serialNotification = serialControlInterface.endpoint_interrupt_in
+	(
+		Some(EndpointAddress::from_parts(2, Direction::In)),
+		16,
+		100
+	);
 
 	// Followed by the data interface
 	let mut serialDataInterface = serialFunction.interface();
-	serialDataInterface.alt_setting
+	let mut serialDataInterface = serialDataInterface.alt_setting
 	(
 		USB_CLASS_DATA,
 		DATA_SUBCLASS_NONE,
 		DATA_PROTOCOL_NONE,
 		None
+	);
+	// Extract the endpoints for communicating on the data interface
+	let serialDataTx = serialDataInterface.endpoint_bulk_in
+	(
+		Some(EndpointAddress::from_parts(1, Direction::In)),
+		64
+	);
+	let serialDataRx = serialDataInterface.endpoint_bulk_out
+	(
+		Some(EndpointAddress::from_parts(1, Direction::Out)),
+		64
 	);
 
 	// Drop our reference to the function so the builder can work
