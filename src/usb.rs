@@ -3,6 +3,7 @@
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
 use embassy_usb::control::{self, Request};
+use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use static_cell::ConstStaticCell;
 
@@ -72,7 +73,7 @@ pub async fn usbTask(usb: UsbResources)
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new(0);
+	let mut serialHandler = SerialHandler::new();
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -84,9 +85,6 @@ pub async fn usbTask(usb: UsbResources)
 		&mut [],
 		CONTROL_BUFFER.take(),
 	);
-
-	// Register the serial handler so we can deal with CDC ACM state requests
-	builder.handler(&mut serialHandler);
 
 	// Define a new "function" to be the root of the CDC-ACM support
 	let mut serialFunction = builder.function
@@ -104,6 +102,7 @@ pub async fn usbTask(usb: UsbResources)
 		CDC_PROTOCOL_NONE,
 		None
 	);
+	serialHandler.controlInterface(serialControlInterface.interface_number());
 
 	// Followed by the data interface
 	let mut serialDataInterface = serialFunction.interface();
@@ -117,6 +116,9 @@ pub async fn usbTask(usb: UsbResources)
 
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
+
+	// Register the serial handler so we can deal with CDC ACM state requests
+	builder.handler(&mut serialHandler);
 
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
@@ -148,18 +150,23 @@ async fn deviceConfig() -> DeviceConfig<'static>
 
 struct SerialHandler
 {
-	interface: u16,
+	controlInterface: u16
 }
 
 impl SerialHandler
 {
-	pub fn new(interface: u16) -> Self
+	pub fn new() -> Self
 	{
 		// Bring up a new serial events handler in idle state
 		Self
 		{
-			interface
+			controlInterface: 255,
 		}
+	}
+
+	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
+	{
+		self.controlInterface = controlInterface.0 as u16;
 	}
 }
 
@@ -169,7 +176,7 @@ impl Handler for SerialHandler
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.interface
+			packet.index != self.controlInterface
 		{
 			return None
 		}
@@ -181,7 +188,7 @@ impl Handler for SerialHandler
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.interface
+			packet.index != self.controlInterface
 		{
 			return None
 		}
