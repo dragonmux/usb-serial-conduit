@@ -241,12 +241,13 @@ impl SerialHandler
 
 	fn encodingToData(&self, data: &mut [u8]) -> Option<usize>
 	{
-		None
+		self.encoding.toData(data)
 	}
 
-	fn encodingFromData(&mut self, buffer: &[u8]) -> Option<()>
+	fn encodingFromData(&mut self, data: &[u8]) -> Option<()>
 	{
-		None
+		SerialEncoding::fromData(data)
+			.map(|encoding| self.encoding = encoding)
 	}
 }
 
