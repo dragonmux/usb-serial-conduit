@@ -12,7 +12,7 @@ use static_cell::ConstStaticCell;
 
 use crate::resources::UsbResources;
 use crate::serial_number::serialNumber;
-use crate::types::{TransmitRequest, ReceiveRequest};
+use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -210,6 +210,7 @@ struct SerialHandler
 	controlInterface: u16,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
+	encoding: SerialEncoding,
 }
 
 impl SerialHandler
@@ -225,6 +226,7 @@ impl SerialHandler
 			controlInterface: 255,
 			transmitChannel,
 			receiveChannel,
+			encoding: SerialEncoding::default(),
 		}
 	}
 
