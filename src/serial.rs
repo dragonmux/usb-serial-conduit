@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use embassy_futures::select::select;
 use embassy_stm32::{bind_interrupts, peripherals};
-use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, Uart};
+use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, OutputConfig, Uart};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
@@ -24,7 +25,8 @@ pub async fn serialTask
 	receiveChannel: Receiver<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 )
 {
-	let config = UartConfig::default();
+	let mut config = UartConfig::default();
+	config.tx_config = OutputConfig::PushPull;
 
 	let serialPort = Uart::new
 	(
@@ -35,5 +37,9 @@ pub async fn serialTask
 		uart.tx_dma,
 		uart.rx_dma,
 		config
-	);
+	)
+	.expect("Failed to set up main serial interface");
+
+	let (serialTransmit, serialReceive) = serialPort.split();
+
 }
