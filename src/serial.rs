@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use embassy_futures::select::select;
+use embassy_futures::select::{Either, select};
+use embassy_stm32::mode::Async;
 use embassy_stm32::{bind_interrupts, peripherals};
-use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, OutputConfig, Uart};
+use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, OutputConfig, Uart, UartRx};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
@@ -36,10 +37,47 @@ pub async fn serialTask
 		UartIrqs,
 		uart.tx_dma,
 		uart.rx_dma,
-		config
+		config.clone()
 	)
 	.expect("Failed to set up main serial interface");
 
-	let (serialTransmit, serialReceive) = serialPort.split();
+	let (serialTransmit, mut serialReceive) =
+		serialPort.split();
+	let mut auxSerialReceiveBuffer = [0u8; 64];
 
+	loop
+	{
+		let receiveFuture = receiveChannel.receive();
+		let auxSerialReceiveFuture =
+			serialReceive.read(&mut auxSerialReceiveBuffer);
+		match select(receiveFuture, auxSerialReceiveFuture).await
+		{
+			Either::First(request) =>
+				handleReceiveRequest(request, &mut serialReceive, &mut config).await,
+			Either::Second(readResult) =>
+			{
+			}
+		}
+	}
+}
+
+async fn handleReceiveRequest(
+	request: ReceiveRequest,
+	serialReceive: &mut UartRx<'static, Async>,
+	config: &mut UartConfig,
+)
+{
+	match request
+	{
+		ReceiveRequest::ChangeEncoding(encoding) =>
+		{
+			config.baudrate = encoding.baudRate;
+			config.stop_bits = encoding.stopBits();
+			config.parity = encoding.parityType();
+			config.data_bits = encoding.dataBits();
+
+			serialReceive.set_config(config)
+				.expect("Unable to set desired encoding state");
+		}
+	}
 }
