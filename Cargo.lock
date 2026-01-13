@@ -1151,6 +1151,7 @@ dependencies = [
  "embassy-stm32",
  "embassy-sync 0.7.2 (git+https://github.com/embassy-rs/embassy)",
  "embassy-usb",
+ "embassy-usb-synopsys-otg",
  "panic-probe",
  "static_cell",
 ]

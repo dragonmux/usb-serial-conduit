@@ -11,6 +11,7 @@ embassy-usb = { git = "https://github.com/embassy-rs/embassy", features = ["defm
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = ["defmt", "arch-cortex-m", "executor-thread"] }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
+embassy-usb-synopsys-otg = { git = "https://github.com/embassy-rs/embassy" }
 
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"

@@ -6,6 +6,7 @@ pub enum TransmitRequest
 
 pub enum ReceiveRequest
 {
+	ChangeEncoding(SerialEncoding),
 }
 
 #[repr(u8)]

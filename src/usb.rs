@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use core::cell::{OnceCell, RefCell};
+use embassy_futures::select::{Either, select};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
+use embassy_sync::signal::Signal;
 use embassy_usb::control::{self, Request};
 use embassy_usb::driver::{Direction, EndpointAddress};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
+use embassy_usb_synopsys_otg::{Endpoint, In, Out};
 use static_cell::ConstStaticCell;
 
 use crate::resources::UsbResources;
@@ -141,9 +145,10 @@ pub async fn usbTask
 		64
 	);
 
+	// Set up the endpoints against our serial handler
+	serialHandler.endpoints(serialNotification, serialDataTx, serialDataRx);
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
-
 	// Register the serial handler so we can deal with CDC ACM state requests
 	builder.handler(&mut serialHandler);
 
@@ -205,15 +210,19 @@ enum CdcNotification
 	SerialState = 0x20,
 }
 
-struct SerialHandler
+struct SerialHandler<'d>
 {
 	controlInterface: u16,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
-	encoding: SerialEncoding,
+	encoding: RefCell<SerialEncoding>,
+	notificationEndpoint: OnceCell<Endpoint<'d, In>>,
+	transmitEndpoint: OnceCell<Endpoint<'d, In>>,
+	receiveEndpoint: OnceCell<Endpoint<'d, Out>>,
+	encodingUpdater: Signal<CriticalSectionRawMutex, SerialEncoding>,
 }
 
-impl SerialHandler
+impl<'d> SerialHandler<'d>
 {
 	pub fn new(
 		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
@@ -226,7 +235,11 @@ impl SerialHandler
 			controlInterface: 255,
 			transmitChannel,
 			receiveChannel,
-			encoding: SerialEncoding::default(),
+			encoding: RefCell::new(SerialEncoding::default()),
+			notificationEndpoint: OnceCell::new(),
+			transmitEndpoint: OnceCell::new(),
+			receiveEndpoint: OnceCell::new(),
+			encodingUpdater: Signal::new(),
 		}
 	}
 
@@ -235,23 +248,57 @@ impl SerialHandler
 		self.controlInterface = controlInterface.0 as u16;
 	}
 
+	pub fn endpoints(
+		&mut self,
+		notificationEndpoint: Endpoint<'d, In>,
+		transmitEndpoint: Endpoint<'d, In>,
+		receiveEndpoint: Endpoint<'d, Out>,
+	)
+	{
+		self.notificationEndpoint
+			.set(notificationEndpoint).map_err(|_| ())
+			.and_then(|()| self.transmitEndpoint.set(transmitEndpoint).map_err(|_| ()))
+			.and_then(|()| self.receiveEndpoint.set(receiveEndpoint).map_err(|_| ()))
+			.expect("Endpoints already initialised")
+	}
+
+	pub async fn run(&self) -> !
+	{
+		loop
+		{
+			let encodingFuture = self.encodingUpdater.wait();
+			let transmitFuture = self.transmitChannel.receive();
+			match select(encodingFuture, transmitFuture).await
+			{
+				Either::First(encoding) =>
+				{
+					self.encoding.replace(encoding);
+					self.receiveChannel.send(ReceiveRequest::ChangeEncoding(encoding)).await;
+				},
+				Either::Second(request) =>
+				{
+				},
+			}
+		}
+	}
+
 	fn controlLineState(&mut self, _state: u16)
 	{
 	}
 
 	fn encodingToData(&self, data: &mut [u8]) -> Option<usize>
 	{
-		self.encoding.toData(data)
+		self.encoding.borrow().toData(data)
 	}
 
 	fn encodingFromData(&mut self, data: &[u8]) -> Option<()>
 	{
 		SerialEncoding::fromData(data)
-			.map(|encoding| self.encoding = encoding)
+			.map(|encoding| self.encodingUpdater.signal(encoding))
 	}
 }
 
-impl Handler for SerialHandler
+impl Handler for SerialHandler<'_>
 {
 	fn control_in<'a>(&'a mut self, packet: Request, data: &'a mut [u8]) -> Option<control::InResponse<'a>>
 	{
