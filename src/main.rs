@@ -5,6 +5,7 @@
 #![no_main]
 
 mod resources;
+mod run_multiple;
 mod serial;
 mod serial_number;
 mod types;
