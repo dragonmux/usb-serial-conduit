@@ -9,6 +9,7 @@ mod run_multiple;
 mod serial;
 mod serial_number;
 mod types;
+mod unsafe_ref_cell;
 mod usb;
 
 use embassy_executor::Spawner;
