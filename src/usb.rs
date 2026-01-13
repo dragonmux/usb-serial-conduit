@@ -18,7 +18,7 @@ use crate::resources::UsbResources;
 use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
 use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
-use crate::ref_counted::{RefCounted, RefTo};
+use crate::ref_counted::{Rc, RcPool};
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -87,8 +87,12 @@ pub async fn usbTask
 	// Along with grabbing the buffer for hold the config descriptor
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
+	// Create a container for our serial handler to be created from
+	let mut serialHandlerPool: RcPool<SerialHandlerInner, 1> = RcPool::new();
+
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new(transmitChannel, receiveChannel);
+	let mut serialHandler = SerialHandler::new(&mut serialHandlerPool, transmitChannel, receiveChannel);
+	let serialHandlerInner = serialHandler.inner();
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -149,7 +153,6 @@ pub async fn usbTask
 
 	// Set up the endpoints against our serial handler
 	serialHandler.endpoints(serialNotification, serialDataTx, serialDataRx);
-	let serialHandlerInner = serialHandler.inner();
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
 	// Register the serial handler so we can deal with CDC ACM state requests
@@ -157,7 +160,7 @@ pub async fn usbTask
 
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
-	RunTwo::new(usbDevice.run(), serialHandlerInner.run()).await
+	RunTwo::new(usbDevice.run(), serialHandlerInner.borrow().run()).await;
 }
 
 // Compile-time set up the device descriptor for this
@@ -331,12 +334,13 @@ impl<'d> SerialHandlerInner<'d>
 
 struct SerialHandler<'d>
 {
-	inner: RefCounted<SerialHandlerInner<'d>>,
+	inner: Rc<SerialHandlerInner<'d>>,
 }
 
 impl<'d> SerialHandler<'d>
 {
 	pub fn new(
+		serialHandlerPool: &mut RcPool<SerialHandlerInner<'d>, 1>,
 		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 		receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	) -> Self
@@ -344,7 +348,7 @@ impl<'d> SerialHandler<'d>
 		// Bring up a new serial events handler in idle state
 		Self
 		{
-			inner: RefCounted::new(SerialHandlerInner
+			inner: serialHandlerPool.alloc(SerialHandlerInner
 			{
 				controlInterface: 255,
 				transmitChannel,
@@ -355,13 +359,13 @@ impl<'d> SerialHandler<'d>
 				receiveEndpoint: OnceCell::new(),
 				encodingUpdate: Signal::new(),
 				stateUpdate: Signal::new(),
-			}),
+			}).expect("Rc pool should not be exhausted"),
 		}
 	}
 
 	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
 	{
-		self.inner.controlInterface(controlInterface);
+		self.inner.borrowMut().controlInterface(controlInterface);
 	}
 
 	pub fn endpoints(
@@ -371,12 +375,12 @@ impl<'d> SerialHandler<'d>
 		receiveEndpoint: Endpoint<'d, Out>,
 	)
 	{
-		self.inner.endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
+		self.inner.borrowMut().endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
 	}
 
-	pub fn inner(&mut self) -> RefTo<SerialHandlerInner<'d>>
+	pub fn inner(&self) -> Rc<SerialHandlerInner<'d>>
 	{
-		self.inner.ref_to()
+		self.inner.clone()
 	}
 }
 
@@ -386,7 +390,7 @@ impl Handler for SerialHandler<'_>
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.inner.controlInterface
+			packet.index != self.inner.borrow().controlInterface
 		{
 			return None
 		}
@@ -395,7 +399,7 @@ impl Handler for SerialHandler<'_>
 		{
 			CdcRequest::GetLineCoding =>
 			{
-				self.inner.encodingToData(data)
+				self.inner.borrow().encodingToData(data)
 					.map(|length| control::InResponse::Accepted(&data[0..length]))
 			}
 			_ => None
@@ -406,7 +410,7 @@ impl Handler for SerialHandler<'_>
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.inner.controlInterface
+			packet.index != self.inner.borrow().controlInterface
 		{
 			return None
 		}
@@ -415,12 +419,12 @@ impl Handler for SerialHandler<'_>
 		{
 			CdcRequest::SetControlLineState =>
 			{
-				self.inner.controlLineState(packet.value);
+				self.inner.borrowMut().controlLineState(packet.value);
 				Some(control::OutResponse::Accepted)
 			}
 			CdcRequest::SetLineCoding =>
 			{
-				self.inner.encodingFromData(data)
+				self.inner.borrowMut().encodingFromData(data)
 					.map(|()| control::OutResponse::Accepted)
 			}
 			_ => None

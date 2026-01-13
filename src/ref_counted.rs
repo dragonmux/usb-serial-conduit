@@ -1,64 +1,165 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use core::{ops::{Deref, DerefMut}, ptr::NonNull};
-
-pub struct RefCounted<T: ?Sized>
+use core::
 {
-	value: T
+	cell::{Cell, Ref, RefCell, RefMut},
+	hint,
+	marker::PhantomData,
+	mem::MaybeUninit,
+	ptr::{self, NonNull},
+};
+
+/// This represents a pool capable of holding N T's
+pub struct RcPool<T: Sized, const N: usize>
+{
+	pool: [MaybeUninit<RcInner<T>>; N],
+	allocated: usize,
 }
 
-impl<T> RefCounted<T>
+impl<T, const N: usize> RcPool<T, N>
 {
-	pub const fn new(value: T) -> Self
+	/// Create a new Rc pool
+	pub const fn new() -> Self
 	{
 		Self
 		{
-			value: value
+			pool: [const { MaybeUninit::uninit() }; N],
+			allocated: 0,
 		}
 	}
 }
 
-impl<T: ?Sized> RefCounted<T>
+impl<T: Sized, const N: usize> RcPool<T, N>
 {
-	pub fn ref_to(&mut self) -> RefTo<T>
+	pub fn alloc(&mut self, value: T) -> Option<Rc<T>>
 	{
-		let value = unsafe { NonNull::new_unchecked(&mut self.value) };
-		RefTo { value }
+		if self.allocated == N
+		{
+			None
+		}
+		else
+		{
+			let inner = self.pool[self.allocated]
+				.write(
+					RcInner
+					{
+						refCount: Cell::new(1),
+						value: RefCell::new(value),
+					}
+				);
+			Some(Rc::fromInner(inner))
+		}
 	}
 }
 
-impl<T: ?Sized> Deref for RefCounted<T>
+/// Container for the control block and data of a given reference counted type
+struct RcInner<T: Sized>
 {
-	type Target = T;
+	refCount: Cell<usize>,
+	value: RefCell<T>,
+}
 
-	#[inline]
-	fn deref(&self) -> &T
+impl<T> RcInner<T>
+{
+	fn count(&self) -> usize
 	{
-		&self.value
+		self.refCount.get()
+	}
+
+	fn incCount(&self)
+	{
+		let count = self.count();
+		// It should be entirely possible to be here if the reference count is not at least 1.
+		// We emit this hint to ensure LLVM doesn't do a codegen stupid
+		unsafe
+		{
+			hint::assert_unchecked(count != 0);
+		}
+		let count = count.wrapping_add(1);
+		self.refCount.set(count);
+		// If somehow that managed to overflow, panic with a message
+		if count == 0
+		{
+			panic!("Reference count overflowed for Rc at {:?}", self as *const Self);
+		}
+	}
+
+	fn decCount(&self)
+	{
+		self.refCount.set(self.count() - 1);
 	}
 }
 
-impl<T: ?Sized> DerefMut for RefCounted<T>
+/// A reference counted pointer to some data, allocated from a pool
+pub struct Rc<T: Sized>
 {
-	#[inline]
-	fn deref_mut(&mut self) -> &mut T
+	ptr: NonNull<RcInner<T>>,
+	marker: PhantomData<RcInner<T>>,
+}
+
+impl<T: Sized> Rc<T>
+{
+	fn fromInner(inner: &mut RcInner<T>) -> Self
 	{
-		&mut self.value
+		Self
+		{
+			ptr: unsafe { NonNull::new_unchecked(inner) },
+			marker: PhantomData,
+		}
+	}
+
+	#[inline]
+	unsafe fn fromInnerIn(ptr: NonNull<RcInner<T>>) -> Self
+	{
+		Self { ptr, marker: PhantomData }
+	}
+
+	#[inline(always)]
+	fn inner(&self) -> &RcInner<T>
+	{
+		unsafe { self.ptr.as_ref() }
+	}
+
+	#[inline]
+	pub fn borrow(&self) -> Ref<'_, T>
+	{
+		self.inner().value.borrow()
+	}
+
+	#[inline]
+	pub fn borrowMut(&self) -> RefMut<'_, T>
+	{
+		self.inner().value.borrow_mut()
 	}
 }
 
-pub struct RefTo<T: ?Sized>
+impl<T: Sized> Clone for Rc<T>
 {
-	value: NonNull<T>,
+	#[inline]
+	fn clone(&self) -> Self
+	{
+		unsafe
+		{
+			self.inner().incCount();
+			Self::fromInnerIn(self.ptr)
+		}
+	}
 }
 
-impl<T: ?Sized> Deref for RefTo<T>
+impl<T: Sized> Drop for Rc<T>
 {
-	type Target = T;
-
 	#[inline]
-	fn deref(&self) -> &T
+	fn drop(&mut self)
 	{
-		unsafe { self.value.as_ref() }
+		// Drop the reference count by one
+		self.inner().decCount();
+		if self.inner().count() == 0
+		{
+			// If we were the last reference, destroy the contained object
+			unsafe
+			{
+				ptr::drop_in_place(&mut (*self.ptr.as_ptr()).value);
+			}
+		}
 	}
 }
