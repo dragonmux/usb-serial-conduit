@@ -8,8 +8,6 @@ enum MaybeDone<Fut: Future>
 	Future(Fut),
 	// A the output of a Future that has completed
 	Done(Fut::Output),
-	// The state after the output has been taken
-	Gone,
 }
 
 impl<Fut: Future> MaybeDone<Fut>
