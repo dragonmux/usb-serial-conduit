@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use core::cell::{OnceCell, RefCell, UnsafeCell};
-use core::ops::DerefMut;
+use core::cell::{OnceCell, RefCell};
 use embassy_futures::select::{Either3, select3};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
@@ -19,7 +18,7 @@ use crate::resources::UsbResources;
 use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
 use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
-use crate::unsafe_ref_cell::UnsafeRefCell;
+use crate::ref_counted::{RefCounted, RefTo};
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -89,10 +88,7 @@ pub async fn usbTask
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
 	// Create the serial handler here so we get teardown ops in the right order
-	let serialHandler = UnsafeRefCell::new(
-		SerialHandler::new(transmitChannel, receiveChannel)
-	);
-	let mut serialHandlerRef = serialHandler.borrowMut();
+	let mut serialHandler = SerialHandler::new(transmitChannel, receiveChannel);
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -121,7 +117,7 @@ pub async fn usbTask
 		CDC_PROTOCOL_NONE,
 		None
 	);
-	serialHandlerRef.controlInterface(serialControlInterface.interface_number());
+	serialHandler.controlInterface(serialControlInterface.interface_number());
 	// Extract the endpoint for sending notifications for this control interface
 	let serialNotification = serialControlInterface.endpoint_interrupt_in
 	(
@@ -152,15 +148,16 @@ pub async fn usbTask
 	);
 
 	// Set up the endpoints against our serial handler
-	serialHandlerRef.endpoints(serialNotification, serialDataTx, serialDataRx);
+	serialHandler.endpoints(serialNotification, serialDataTx, serialDataRx);
+	let serialHandlerInner = serialHandler.inner();
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
 	// Register the serial handler so we can deal with CDC ACM state requests
-	builder.handler(serialHandlerRef.deref_mut());
+	builder.handler(&mut serialHandler);
 
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
-	RunTwo::new(usbDevice.run(), serialHandler.borrow().run()).await
+	RunTwo::new(usbDevice.run(), serialHandlerInner.run()).await
 }
 
 // Compile-time set up the device descriptor for this
@@ -247,7 +244,7 @@ impl CdcNotification
 	}
 }
 
-struct SerialHandler<'d>
+struct SerialHandlerInner<'d>
 {
 	controlInterface: u16,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
@@ -260,47 +257,8 @@ struct SerialHandler<'d>
 	stateUpdate: Signal<CriticalSectionRawMutex, u16>,
 }
 
-impl<'d> SerialHandler<'d>
+impl<'d> SerialHandlerInner<'d>
 {
-	pub fn new(
-		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
-		receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
-	) -> Self
-	{
-		// Bring up a new serial events handler in idle state
-		Self
-		{
-			controlInterface: 255,
-			transmitChannel,
-			receiveChannel,
-			encoding: RefCell::new(SerialEncoding::default()),
-			notificationEndpoint: OnceCell::new(),
-			transmitEndpoint: OnceCell::new(),
-			receiveEndpoint: OnceCell::new(),
-			encodingUpdate: Signal::new(),
-			stateUpdate: Signal::new(),
-		}
-	}
-
-	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
-	{
-		self.controlInterface = controlInterface.0 as u16;
-	}
-
-	pub fn endpoints(
-		&mut self,
-		notificationEndpoint: Endpoint<'d, In>,
-		transmitEndpoint: Endpoint<'d, In>,
-		receiveEndpoint: Endpoint<'d, Out>,
-	)
-	{
-		self.notificationEndpoint
-			.set(RefCell::new(notificationEndpoint)).map_err(|_| ())
-			.and_then(|()| self.transmitEndpoint.set(transmitEndpoint).map_err(|_| ()))
-			.and_then(|()| self.receiveEndpoint.set(receiveEndpoint).map_err(|_| ()))
-			.expect("Endpoints already initialised")
-	}
-
 	pub async fn run(&self) -> !
 	{
 		loop
@@ -335,6 +293,25 @@ impl<'d> SerialHandler<'d>
 		}
 	}
 
+	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
+	{
+		self.controlInterface = controlInterface.0 as u16;
+	}
+
+	pub fn endpoints(
+		&mut self,
+		notificationEndpoint: Endpoint<'d, In>,
+		transmitEndpoint: Endpoint<'d, In>,
+		receiveEndpoint: Endpoint<'d, Out>,
+	)
+	{
+		self.notificationEndpoint
+			.set(RefCell::new(notificationEndpoint)).map_err(|_| ())
+			.and_then(|()| self.transmitEndpoint.set(transmitEndpoint).map_err(|_| ()))
+			.and_then(|()| self.receiveEndpoint.set(receiveEndpoint).map_err(|_| ()))
+			.expect("Endpoints already initialised")
+	}
+
 	fn controlLineState(&mut self, state: u16)
 	{
 		self.stateUpdate.signal(state);
@@ -352,13 +329,64 @@ impl<'d> SerialHandler<'d>
 	}
 }
 
+struct SerialHandler<'d>
+{
+	inner: RefCounted<SerialHandlerInner<'d>>,
+}
+
+impl<'d> SerialHandler<'d>
+{
+	pub fn new(
+		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
+		receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
+	) -> Self
+	{
+		// Bring up a new serial events handler in idle state
+		Self
+		{
+			inner: RefCounted::new(SerialHandlerInner
+			{
+				controlInterface: 255,
+				transmitChannel,
+				receiveChannel,
+				encoding: RefCell::new(SerialEncoding::default()),
+				notificationEndpoint: OnceCell::new(),
+				transmitEndpoint: OnceCell::new(),
+				receiveEndpoint: OnceCell::new(),
+				encodingUpdate: Signal::new(),
+				stateUpdate: Signal::new(),
+			}),
+		}
+	}
+
+	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
+	{
+		self.inner.controlInterface(controlInterface);
+	}
+
+	pub fn endpoints(
+		&mut self,
+		notificationEndpoint: Endpoint<'d, In>,
+		transmitEndpoint: Endpoint<'d, In>,
+		receiveEndpoint: Endpoint<'d, Out>,
+	)
+	{
+		self.inner.endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
+	}
+
+	pub fn inner(&self) -> RefTo<SerialHandlerInner<'d>>
+	{
+		self.inner.ref_to()
+	}
+}
+
 impl Handler for SerialHandler<'_>
 {
 	fn control_in<'a>(&'a mut self, packet: Request, data: &'a mut [u8]) -> Option<control::InResponse<'a>>
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.controlInterface
+			packet.index != self.inner.controlInterface
 		{
 			return None
 		}
@@ -367,7 +395,7 @@ impl Handler for SerialHandler<'_>
 		{
 			CdcRequest::GetLineCoding =>
 			{
-				self.encodingToData(data)
+				self.inner.encodingToData(data)
 					.map(|length| control::InResponse::Accepted(&data[0..length]))
 			}
 			_ => None
@@ -378,7 +406,7 @@ impl Handler for SerialHandler<'_>
 	{
 		if packet.recipient != control::Recipient::Interface ||
 			packet.request_type != control::RequestType::Class ||
-			packet.index != self.controlInterface
+			packet.index != self.inner.controlInterface
 		{
 			return None
 		}
@@ -387,12 +415,12 @@ impl Handler for SerialHandler<'_>
 		{
 			CdcRequest::SetControlLineState =>
 			{
-				self.controlLineState(packet.value);
+				self.inner.controlLineState(packet.value);
 				Some(control::OutResponse::Accepted)
 			}
 			CdcRequest::SetLineCoding =>
 			{
-				self.encodingFromData(data)
+				self.inner.encodingFromData(data)
 					.map(|()| control::OutResponse::Accepted)
 			}
 			_ => None
