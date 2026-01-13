@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use core::cell::{OnceCell, RefCell};
+use core::cell::{OnceCell, RefCell, UnsafeCell};
+use core::ops::DerefMut;
 use embassy_futures::select::{Either3, select3};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
@@ -15,8 +16,10 @@ use embassy_usb_synopsys_otg::{Endpoint, In, Out};
 use static_cell::ConstStaticCell;
 
 use crate::resources::UsbResources;
+use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
 use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
+use crate::unsafe_ref_cell::UnsafeRefCell;
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -86,7 +89,10 @@ pub async fn usbTask
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new(transmitChannel, receiveChannel);
+	let serialHandler = UnsafeRefCell::new(
+		SerialHandler::new(transmitChannel, receiveChannel)
+	);
+	let mut serialHandlerRef = serialHandler.borrowMut();
 
 	// Make an instance of the embassy USB state builder
 	let mut builder = Builder::new
@@ -115,7 +121,7 @@ pub async fn usbTask
 		CDC_PROTOCOL_NONE,
 		None
 	);
-	serialHandler.controlInterface(serialControlInterface.interface_number());
+	serialHandlerRef.controlInterface(serialControlInterface.interface_number());
 	// Extract the endpoint for sending notifications for this control interface
 	let serialNotification = serialControlInterface.endpoint_interrupt_in
 	(
@@ -146,15 +152,15 @@ pub async fn usbTask
 	);
 
 	// Set up the endpoints against our serial handler
-	serialHandler.endpoints(serialNotification, serialDataTx, serialDataRx);
+	serialHandlerRef.endpoints(serialNotification, serialDataTx, serialDataRx);
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
 	// Register the serial handler so we can deal with CDC ACM state requests
-	builder.handler(&mut serialHandler);
+	builder.handler(serialHandlerRef.deref_mut());
 
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
-	usbDevice.run().await
+	RunTwo::new(usbDevice.run(), serialHandler.borrow().run()).await
 }
 
 // Compile-time set up the device descriptor for this
