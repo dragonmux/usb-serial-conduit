@@ -12,8 +12,7 @@ use embassy_usb::driver::{Direction, EndpointAddress, EndpointIn};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use embassy_usb_synopsys_otg::{Endpoint, In, Out};
-use static_cell::ConstStaticCell;
-
+use static_cell::{ConstStaticCell, StaticCell};
 use crate::resources::UsbResources;
 use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
@@ -60,6 +59,11 @@ static CONTROL_BUFFER: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64
 // Buffer that must be large enough to hold the completed configuration descriptor
 static CONFIGURATION_DESCRIPTOR: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
 
+// Create a container for our serial handler to be created from
+static SERIAL_HANDLER_POOL: ConstStaticCell<RcPool<SerialHandlerInner, 1>> =
+	ConstStaticCell::new(RcPool::new());
+static SERIAL_HANDLER: StaticCell<SerialHandler> = StaticCell::new();
+
 #[embassy_executor::task]
 pub async fn usbTask
 (
@@ -87,11 +91,13 @@ pub async fn usbTask
 	// Along with grabbing the buffer for hold the config descriptor
 	let configDescriptor = CONFIGURATION_DESCRIPTOR.take();
 
-	// Create a container for our serial handler to be created from
-	let mut serialHandlerPool: RcPool<SerialHandlerInner, 1> = RcPool::new();
-
 	// Create the serial handler here so we get teardown ops in the right order
-	let mut serialHandler = SerialHandler::new(&mut serialHandlerPool, transmitChannel, receiveChannel);
+	let serialHandler = SERIAL_HANDLER.init(SerialHandler::new
+	(
+		SERIAL_HANDLER_POOL.take(),
+		transmitChannel,
+		receiveChannel
+	));
 	let serialHandlerInner = serialHandler.inner();
 
 	// Make an instance of the embassy USB state builder
@@ -156,7 +162,7 @@ pub async fn usbTask
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
 	// Register the serial handler so we can deal with CDC ACM state requests
-	builder.handler(&mut serialHandler);
+	builder.handler(serialHandler);
 
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
