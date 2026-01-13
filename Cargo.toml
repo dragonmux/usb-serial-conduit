@@ -9,8 +9,9 @@ edition = "2024"
 embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = ["defmt", "memory-x", "stm32u585ci", "unstable-pac"] }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", features = ["defmt"] }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = ["defmt", "arch-cortex-m", "executor-thread"] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
 embassy-usb-synopsys-otg = { git = "https://github.com/embassy-rs/embassy" }
 
 defmt = "1.0.1"
@@ -27,10 +28,3 @@ name = "usb-serial-conduit"
 test = false
 doctest = false
 bench = false
-
-# When fixing things inside embassy it is useful to use the local checked out version sometimes ;)
-[patch."https://github.com/embassy-rs/embassy"]
-embassy-stm32 = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-stm32" }
-embassy-usb = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb" }
-embassy-usb-driver = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb-driver" }
-embassy-usb-synopsys-otg = { path = "/pool/sora/Programming/dragonmux/dragonBoot-rs/embassy/embassy-usb-synopsys-otg" }

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use embassy_embedded_hal::SetConfig;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::mode::Async;
 use embassy_stm32::{bind_interrupts, peripherals};
-use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, OutputConfig, Uart, UartRx};
+use embassy_stm32::usart::{Config as UartConfig, InterruptHandler, OutputConfig, Uart};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
@@ -29,7 +30,7 @@ pub async fn serialTask
 	let mut config = UartConfig::default();
 	config.tx_config = OutputConfig::PushPull;
 
-	let serialPort = Uart::new
+	let mut serialPort = Uart::new
 	(
 		uart.peripheral,
 		uart.rx,
@@ -41,19 +42,17 @@ pub async fn serialTask
 	)
 	.expect("Failed to set up main serial interface");
 
-	let (serialTransmit, mut serialReceive) =
-		serialPort.split();
 	let mut auxSerialReceiveBuffer = [0u8; 64];
 
 	loop
 	{
 		let receiveFuture = receiveChannel.receive();
 		let auxSerialReceiveFuture =
-			serialReceive.read(&mut auxSerialReceiveBuffer);
+			serialPort.read(&mut auxSerialReceiveBuffer);
 		match select(receiveFuture, auxSerialReceiveFuture).await
 		{
 			Either::First(request) =>
-				handleReceiveRequest(request, &mut serialReceive, &mut config).await,
+				handleReceiveRequest(request, &mut serialPort, &mut config).await,
 			Either::Second(readResult) =>
 			{
 			}
@@ -63,7 +62,7 @@ pub async fn serialTask
 
 async fn handleReceiveRequest(
 	request: ReceiveRequest,
-	serialReceive: &mut UartRx<'static, Async>,
+	serialPort: &mut Uart<'static, Async>,
 	config: &mut UartConfig,
 )
 {
@@ -76,7 +75,7 @@ async fn handleReceiveRequest(
 			config.parity = encoding.parityType();
 			config.data_bits = encoding.dataBits();
 
-			serialReceive.set_config(config)
+			serialPort.set_config(config)
 				.expect("Unable to set desired encoding state");
 		}
 	}
