@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use core::cell::{OnceCell, RefCell};
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_usb::control::{self, Request};
-use embassy_usb::driver::{Direction, EndpointAddress};
+use embassy_usb::driver::{Direction, EndpointAddress, EndpointIn};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use embassy_usb_synopsys_otg::{Endpoint, In, Out};
@@ -210,16 +210,48 @@ enum CdcNotification
 	SerialState = 0x20,
 }
 
+impl CdcNotification
+{
+	fn asMessage<'a>(&self, notification: &'a mut [u8; 16], interface: u16) -> &'a [u8]
+	{
+		match self
+		{
+			Self::SerialState =>
+			{
+				// Build out the initial message response
+				let mut message =
+				[
+					0xa1,
+					Self::SerialState as u8,
+					0, 0, 0, 0, 0, 0, 0, 0
+				];
+
+				// Now fill in all the u16's by proper byte order
+				message[2..4].copy_from_slice(&u16::to_le_bytes(0));
+				message[4..6].copy_from_slice(&interface.to_le_bytes());
+				// 2 bytes after the header
+				message[6..8].copy_from_slice(&u16::to_le_bytes(2));
+				// Said 2 bytes representing the state, which is RTS & DTR
+				message[8..10].copy_from_slice(&u16::to_le_bytes(3));
+
+				notification[0..10].copy_from_slice(&message);
+				&notification[0..10]
+			}
+		}
+	}
+}
+
 struct SerialHandler<'d>
 {
 	controlInterface: u16,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	encoding: RefCell<SerialEncoding>,
-	notificationEndpoint: OnceCell<Endpoint<'d, In>>,
+	notificationEndpoint: OnceCell<RefCell<Endpoint<'d, In>>>,
 	transmitEndpoint: OnceCell<Endpoint<'d, In>>,
 	receiveEndpoint: OnceCell<Endpoint<'d, Out>>,
-	encodingUpdater: Signal<CriticalSectionRawMutex, SerialEncoding>,
+	encodingUpdate: Signal<CriticalSectionRawMutex, SerialEncoding>,
+	stateUpdate: Signal<CriticalSectionRawMutex, u16>,
 }
 
 impl<'d> SerialHandler<'d>
@@ -239,7 +271,8 @@ impl<'d> SerialHandler<'d>
 			notificationEndpoint: OnceCell::new(),
 			transmitEndpoint: OnceCell::new(),
 			receiveEndpoint: OnceCell::new(),
-			encodingUpdater: Signal::new(),
+			encodingUpdate: Signal::new(),
+			stateUpdate: Signal::new(),
 		}
 	}
 
@@ -256,7 +289,7 @@ impl<'d> SerialHandler<'d>
 	)
 	{
 		self.notificationEndpoint
-			.set(notificationEndpoint).map_err(|_| ())
+			.set(RefCell::new(notificationEndpoint)).map_err(|_| ())
 			.and_then(|()| self.transmitEndpoint.set(transmitEndpoint).map_err(|_| ()))
 			.and_then(|()| self.receiveEndpoint.set(receiveEndpoint).map_err(|_| ()))
 			.expect("Endpoints already initialised")
@@ -266,24 +299,39 @@ impl<'d> SerialHandler<'d>
 	{
 		loop
 		{
-			let encodingFuture = self.encodingUpdater.wait();
+			let encodingFuture = self.encodingUpdate.wait();
+			let stateFuture = self.stateUpdate.wait();
 			let transmitFuture = self.transmitChannel.receive();
-			match select(encodingFuture, transmitFuture).await
+			match select3(encodingFuture, stateFuture, transmitFuture).await
 			{
-				Either::First(encoding) =>
+				Either3::First(encoding) =>
 				{
 					self.encoding.replace(encoding);
 					self.receiveChannel.send(ReceiveRequest::ChangeEncoding(encoding)).await;
 				},
-				Either::Second(request) =>
+				Either3::Second(_) =>
+				{
+					let mut notification = [0; 16];
+					let notification = CdcNotification::SerialState.asMessage(
+						&mut notification, self.controlInterface
+					);
+
+					self.notificationEndpoint.get()
+						.expect("Notification endpoint should be valid at this point")
+						.borrow_mut()
+						.write(notification).await
+						.expect("Endpoint in strange state");
+				}
+				Either3::Third(request) =>
 				{
 				},
 			}
 		}
 	}
 
-	fn controlLineState(&mut self, _state: u16)
+	fn controlLineState(&mut self, state: u16)
 	{
+		self.stateUpdate.signal(state);
 	}
 
 	fn encodingToData(&self, data: &mut [u8]) -> Option<usize>
@@ -294,7 +342,7 @@ impl<'d> SerialHandler<'d>
 	fn encodingFromData(&mut self, data: &[u8]) -> Option<()>
 	{
 		SerialEncoding::fromData(data)
-			.map(|encoding| self.encodingUpdater.signal(encoding))
+			.map(|encoding| self.encodingUpdate.signal(encoding))
 	}
 }
 
