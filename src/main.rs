@@ -4,6 +4,7 @@
 #![no_std]
 #![no_main]
 
+mod ref_counted;
 mod resources;
 mod run_multiple;
 mod serial;
