@@ -72,7 +72,7 @@ pub async fn usbTask
 	// We have VBus hooked up on this hardware, so do this.
 	config.vbus_detection = true;
 	// Create an instance of the USB driver for our peripheral
-	let driver = Driver::new_fs
+	let driver: Driver<'static, peripherals::USB_OTG_FS> = Driver::new_fs
 	(
 		usb.peripheral,
 		UsbIrqs,
@@ -123,7 +123,7 @@ pub async fn usbTask
 	);
 	serialHandler.controlInterface(serialControlInterface.interface_number());
 	// Extract the endpoint for sending notifications for this control interface
-	let serialNotification = serialControlInterface.endpoint_interrupt_in
+	let serialNotification: Endpoint<'static, In> = serialControlInterface.endpoint_interrupt_in
 	(
 		Some(EndpointAddress::from_parts(2, Direction::In)),
 		16,
@@ -140,12 +140,12 @@ pub async fn usbTask
 		None
 	);
 	// Extract the endpoints for communicating on the data interface
-	let serialDataTx = serialDataInterface.endpoint_bulk_in
+	let serialDataTx: Endpoint<'static, In> = serialDataInterface.endpoint_bulk_in
 	(
 		Some(EndpointAddress::from_parts(1, Direction::In)),
 		64
 	);
-	let serialDataRx = serialDataInterface.endpoint_bulk_out
+	let serialDataRx: Endpoint<'static, Out> = serialDataInterface.endpoint_bulk_out
 	(
 		Some(EndpointAddress::from_parts(1, Direction::Out)),
 		64
@@ -247,20 +247,20 @@ impl CdcNotification
 	}
 }
 
-struct SerialHandlerInner<'d>
+struct SerialHandlerInner
 {
 	controlInterface: u16,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	encoding: RefCell<SerialEncoding>,
-	notificationEndpoint: OnceCell<RefCell<Endpoint<'d, In>>>,
-	transmitEndpoint: OnceCell<Endpoint<'d, In>>,
-	receiveEndpoint: OnceCell<Endpoint<'d, Out>>,
+	notificationEndpoint: OnceCell<RefCell<Endpoint<'static, In>>>,
+	transmitEndpoint: OnceCell<Endpoint<'static, In>>,
+	receiveEndpoint: OnceCell<Endpoint<'static, Out>>,
 	encodingUpdate: Signal<CriticalSectionRawMutex, SerialEncoding>,
 	stateUpdate: Signal<CriticalSectionRawMutex, u16>,
 }
 
-impl<'d> SerialHandlerInner<'d>
+impl SerialHandlerInner
 {
 	pub async fn run(&self) -> !
 	{
@@ -303,9 +303,9 @@ impl<'d> SerialHandlerInner<'d>
 
 	pub fn endpoints(
 		&mut self,
-		notificationEndpoint: Endpoint<'d, In>,
-		transmitEndpoint: Endpoint<'d, In>,
-		receiveEndpoint: Endpoint<'d, Out>,
+		notificationEndpoint: Endpoint<'static, In>,
+		transmitEndpoint: Endpoint<'static, In>,
+		receiveEndpoint: Endpoint<'static, Out>,
 	)
 	{
 		self.notificationEndpoint
@@ -332,15 +332,15 @@ impl<'d> SerialHandlerInner<'d>
 	}
 }
 
-struct SerialHandler<'d>
+struct SerialHandler
 {
-	inner: Rc<SerialHandlerInner<'d>>,
+	inner: Rc<SerialHandlerInner>,
 }
 
-impl<'d> SerialHandler<'d>
+impl SerialHandler
 {
 	pub fn new(
-		serialHandlerPool: &mut RcPool<SerialHandlerInner<'d>, 1>,
+		serialHandlerPool: &mut RcPool<SerialHandlerInner, 1>,
 		transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 		receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	) -> Self
@@ -363,28 +363,28 @@ impl<'d> SerialHandler<'d>
 		}
 	}
 
-	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
+	pub fn controlInterface(&self, controlInterface: InterfaceNumber)
 	{
 		self.inner.borrowMut().controlInterface(controlInterface);
 	}
 
 	pub fn endpoints(
-		&mut self,
-		notificationEndpoint: Endpoint<'d, In>,
-		transmitEndpoint: Endpoint<'d, In>,
-		receiveEndpoint: Endpoint<'d, Out>,
+		&self,
+		notificationEndpoint: Endpoint<'static, In>,
+		transmitEndpoint: Endpoint<'static, In>,
+		receiveEndpoint: Endpoint<'static, Out>,
 	)
 	{
 		self.inner.borrowMut().endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
 	}
 
-	pub fn inner(&self) -> Rc<SerialHandlerInner<'d>>
+	pub fn inner(&self) -> Rc<SerialHandlerInner>
 	{
 		self.inner.clone()
 	}
 }
 
-impl Handler for SerialHandler<'_>
+impl Handler for SerialHandler
 {
 	fn control_in<'a>(&'a mut self, packet: Request, data: &'a mut [u8]) -> Option<control::InResponse<'a>>
 	{
