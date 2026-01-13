@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use core::fmt::{Display, Formatter, Result};
+
+use embassy_stm32::usart;
+
 pub enum TransmitRequest
 {
 }
@@ -32,6 +36,19 @@ impl From<u8> for StopBits
 	}
 }
 
+impl Into<usart::StopBits> for StopBits
+{
+	fn into(self) -> usart::StopBits
+	{
+		match self
+		{
+			Self::One => usart::StopBits::STOP1,
+			Self::OneAndHalf => usart::StopBits::STOP1P5,
+			Self::Two => usart::StopBits::STOP2,
+		}
+	}
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy)]
 pub enum ParityType
@@ -59,10 +76,39 @@ impl From<u8> for ParityType
 	}
 }
 
+impl Into<usart::Parity> for ParityType
+{
+	fn into(self) -> usart::Parity
+	{
+		match self
+		{
+			Self::None => usart::Parity::ParityNone,
+			Self::Odd => usart::Parity::ParityOdd,
+			Self::Even => usart::Parity::ParityEven,
+			_ => panic!("Unable to represent {} to the hardware", self)
+		}
+	}
+}
+
+impl Display for ParityType
+{
+	fn fmt(&self, fmt: &mut Formatter<'_>) -> Result
+	{
+		match self
+		{
+			Self::None => write!(fmt, "none parity"),
+			Self::Odd => write!(fmt, "odd parity"),
+			Self::Even => write!(fmt, "even parity"),
+			Self::Mark => write!(fmt, "mark parity"),
+			Self::Space => write!(fmt, "space parity"),
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 pub struct SerialEncoding
 {
-	baudRate: u32,
+	pub baudRate: u32,
 	stopBits: StopBits,
 	parityType: ParityType,
 	dataBits: u8,
@@ -119,5 +165,26 @@ impl SerialEncoding
 		data[5] = self.parityType as u8;
 		data[6] = self.dataBits;
 		Some(7)
+	}
+
+	pub fn stopBits(&self) -> usart::StopBits
+	{
+		self.stopBits.into()
+	}
+
+	pub fn parityType(&self) -> usart::Parity
+	{
+		self.parityType.into()
+	}
+
+	pub fn dataBits(&self) -> usart::DataBits
+	{
+		match self.dataBits
+		{
+			7 => usart::DataBits::DataBits7,
+			8 => usart::DataBits::DataBits8,
+			9 => usart::DataBits::DataBits9,
+			bits => panic!("Unable to represent {bits} data bits to the hardware")
+		}
 	}
 }
