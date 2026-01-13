@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use core::{cell::UnsafeCell, ops::{Deref, DerefMut}, ptr::NonNull};
+use core::{ops::{Deref, DerefMut}, ptr::NonNull};
 
 pub struct RefCounted<T: ?Sized>
 {
-	value: UnsafeCell<T>
+	value: T
 }
 
 impl<T> RefCounted<T>
@@ -13,16 +13,16 @@ impl<T> RefCounted<T>
 	{
 		Self
 		{
-			value: UnsafeCell::new(value)
+			value: value
 		}
 	}
 }
 
 impl<T: ?Sized> RefCounted<T>
 {
-	pub fn ref_to(&self) -> RefTo<T>
+	pub fn ref_to(&mut self) -> RefTo<T>
 	{
-		let value = unsafe { NonNull::new_unchecked(self.value.get()) };
+		let value = unsafe { NonNull::new_unchecked(&mut self.value) };
 		RefTo { value }
 	}
 }
@@ -34,7 +34,7 @@ impl<T: ?Sized> Deref for RefCounted<T>
 	#[inline]
 	fn deref(&self) -> &T
 	{
-		unsafe { &*self.value.get() }
+		&self.value
 	}
 }
 
@@ -43,7 +43,7 @@ impl<T: ?Sized> DerefMut for RefCounted<T>
 	#[inline]
 	fn deref_mut(&mut self) -> &mut T
 	{
-		self.value.get_mut()
+		&mut self.value
 	}
 }
 

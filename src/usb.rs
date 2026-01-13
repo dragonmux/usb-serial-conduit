@@ -374,7 +374,7 @@ impl<'d> SerialHandler<'d>
 		self.inner.endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
 	}
 
-	pub fn inner(&self) -> RefTo<SerialHandlerInner<'d>>
+	pub fn inner(&mut self) -> RefTo<SerialHandlerInner<'d>>
 	{
 		self.inner.ref_to()
 	}
