@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use alloc::boxed::Box;
+use defmt::error;
 use embassy_embedded_hal::SetConfig;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::mode::Async;
@@ -48,13 +50,30 @@ pub async fn serialTask
 	{
 		let receiveFuture = receiveChannel.receive();
 		let auxSerialReceiveFuture =
-			serialPort.read(&mut auxSerialReceiveBuffer);
+			serialPort.read_until_idle(&mut auxSerialReceiveBuffer);
 		match select(receiveFuture, auxSerialReceiveFuture).await
 		{
 			Either::First(request) =>
 				handleReceiveRequest(request, &mut serialPort, &mut config).await,
-			Either::Second(readResult) =>
+			Either::Second(result) =>
 			{
+				match result
+				{
+					Ok(byteCount) =>
+					{
+						let mut buffer = unsafe
+						{
+							Box::new_zeroed_slice(byteCount)
+								.assume_init()
+						};
+						buffer.copy_from_slice(&auxSerialReceiveBuffer[0..byteCount]);
+						transmitChannel.send(
+							TransmitRequest::Data(buffer)
+						).await;
+					}
+					Err(error) =>
+						error!("Serial interface read failed, {}", error)
+				}
 			}
 		}
 	}
@@ -78,5 +97,7 @@ async fn handleReceiveRequest(
 			serialPort.set_config(config)
 				.expect("Unable to set desired encoding state");
 		}
+		ReceiveRequest::Data(data) =>
+			serialPort.write(&data).await.expect("Serial interface writes never fail")
 	}
 }
