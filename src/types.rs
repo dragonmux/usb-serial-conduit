@@ -2,15 +2,18 @@
 
 use core::fmt::{Display, Formatter, Result};
 
+use alloc::boxed::Box;
 use embassy_stm32::usart;
 
 pub enum TransmitRequest
 {
+	Data(Box<[u8]>),
 }
 
 pub enum ReceiveRequest
 {
 	ChangeEncoding(SerialEncoding),
+	Data(Box<[u8]>),
 }
 
 #[repr(u8)]
