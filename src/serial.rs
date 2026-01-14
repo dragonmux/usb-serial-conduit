@@ -67,9 +67,9 @@ pub async fn serialTask
 								.assume_init()
 						};
 						buffer.copy_from_slice(&auxSerialReceiveBuffer[0..byteCount]);
-						transmitChannel.send(
-							TransmitRequest::Data(buffer)
-						).await;
+						transmitChannel
+							.send(TransmitRequest::Data(buffer))
+							.await;
 					}
 					Err(error) =>
 						error!("Serial interface read failed, {}", error)

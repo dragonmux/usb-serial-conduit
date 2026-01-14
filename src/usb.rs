@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use core::cell::{OnceCell, RefCell};
-use embassy_futures::select::{Either3, select3};
+use alloc::boxed::Box;
+use defmt::error;
+use embassy_futures::select::{Either4, select4};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_usb::control::{self, Request};
-use embassy_usb::driver::{Direction, EndpointAddress, EndpointIn};
+use embassy_usb::driver::{Direction, EndpointAddress, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use embassy_usb_synopsys_otg::{Endpoint, In, Out};
@@ -260,8 +262,8 @@ struct SerialHandlerInner
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	encoding: RefCell<SerialEncoding>,
 	notificationEndpoint: OnceCell<RefCell<Endpoint<'static, In>>>,
-	transmitEndpoint: OnceCell<Endpoint<'static, In>>,
-	receiveEndpoint: OnceCell<Endpoint<'static, Out>>,
+	transmitEndpoint: OnceCell<RefCell<Endpoint<'static, In>>>,
+	receiveEndpoint: OnceCell<RefCell<Endpoint<'static, Out>>>,
 	encodingUpdate: Signal<CriticalSectionRawMutex, SerialEncoding>,
 	stateUpdate: Signal<CriticalSectionRawMutex, u16>,
 }
@@ -270,19 +272,27 @@ impl SerialHandlerInner
 {
 	pub async fn run(&self) -> !
 	{
+		let mut usbSerialReceiveBuffer = [0u8; 64];
+		let mut receiveEndpoint = self.receiveEndpoint
+				.get()
+				.expect("Receive endpoint should be valid at this point")
+				.borrow_mut();
+
 		loop
 		{
 			let encodingFuture = self.encodingUpdate.wait();
 			let stateFuture = self.stateUpdate.wait();
 			let transmitFuture = self.transmitChannel.receive();
-			match select3(encodingFuture, stateFuture, transmitFuture).await
+			let usbSerialReceiveFuture = receiveEndpoint
+				.read(&mut usbSerialReceiveBuffer);
+			match select4(encodingFuture, stateFuture, transmitFuture, usbSerialReceiveFuture).await
 			{
-				Either3::First(encoding) =>
+				Either4::First(encoding) =>
 				{
 					self.encoding.replace(encoding);
 					self.receiveChannel.send(ReceiveRequest::ChangeEncoding(encoding)).await;
 				},
-				Either3::Second(_) =>
+				Either4::Second(_) =>
 				{
 					let mut notification = [0; 16];
 					let notification = CdcNotification::SerialState.asMessage(
@@ -295,9 +305,28 @@ impl SerialHandlerInner
 						.write(notification).await
 						.expect("Endpoint in strange state");
 				}
-				Either3::Third(request) =>
+				Either4::Third(request) =>
+					self.handleTransmitRequest(request).await,
+				Either4::Fourth(result) =>
 				{
-				},
+					match result
+					{
+						Ok(byteCount) =>
+						{
+							let mut buffer = unsafe
+							{
+								Box::new_zeroed_slice(byteCount)
+									.assume_init()
+							};
+							buffer.copy_from_slice(&usbSerialReceiveBuffer[0..byteCount]);
+							self.receiveChannel
+								.send(ReceiveRequest::Data(buffer))
+								.await;
+						},
+						Err(error) =>
+							error!("USB serial interface read failed, {}", error)
+					}
+				}
 			}
 		}
 	}
@@ -316,8 +345,8 @@ impl SerialHandlerInner
 	{
 		self.notificationEndpoint
 			.set(RefCell::new(notificationEndpoint)).map_err(|_| ())
-			.and_then(|()| self.transmitEndpoint.set(transmitEndpoint).map_err(|_| ()))
-			.and_then(|()| self.receiveEndpoint.set(receiveEndpoint).map_err(|_| ()))
+			.and_then(|()| self.transmitEndpoint.set(RefCell::new(transmitEndpoint)).map_err(|_| ()))
+			.and_then(|()| self.receiveEndpoint.set(RefCell::new(receiveEndpoint)).map_err(|_| ()))
 			.expect("Endpoints already initialised")
 	}
 
@@ -335,6 +364,24 @@ impl SerialHandlerInner
 	{
 		SerialEncoding::fromData(data)
 			.map(|encoding| self.encodingUpdate.signal(encoding))
+	}
+
+	async fn handleTransmitRequest(&self, request: TransmitRequest)
+	{
+		match request
+		{
+			TransmitRequest::Data(data) =>
+			{
+				let mut transmitEndpoint = self.transmitEndpoint
+					.get()
+					.expect("Transmit endpoint should be valid at this point")
+					.borrow_mut();
+
+				transmitEndpoint
+					.write(&data).await
+					.expect("Endpoint in strange state")
+			}
+		};
 	}
 }
 
