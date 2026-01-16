@@ -76,7 +76,7 @@ impl UsbCdcHeaderDescriptor
 	{
 		let mut result = [SUBTYPE_CDC_HEADER, 0, 0];
 		let version = self.cdcVersion as u16;
-		result[1..2].copy_from_slice(&version.to_le_bytes());
+		result[1..3].copy_from_slice(&version.to_le_bytes());
 		result
 	}
 }
