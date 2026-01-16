@@ -11,6 +11,7 @@ mod serial;
 mod serial_number;
 mod types;
 mod usb;
+mod usb_types;
 
 extern crate alloc;
 
