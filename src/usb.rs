@@ -60,7 +60,7 @@ static RX_BUFFER: ConstStaticCell<[u8; 192]> = ConstStaticCell::new([0u8; 192]);
 // Buffer that must be large enough to hold any possible control packet (in or out) that might be generated
 static CONTROL_BUFFER: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
 // Buffer that must be large enough to hold the completed configuration descriptor
-static CONFIGURATION_DESCRIPTOR: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
+static CONFIGURATION_DESCRIPTOR: ConstStaticCell<[u8; 75]> = ConstStaticCell::new([0u8; 75]);
 
 // Create a container for our serial handler to be created from
 static SERIAL_HANDLER_POOL: ConstStaticCell<RcPool<SerialHandlerInner, 1>> =
