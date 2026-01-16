@@ -20,6 +20,7 @@ use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
 use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
 use crate::ref_counted::{Rc, RcPool};
+use crate::usb_types::{UsbCdcAcmCapabilities, UsbCdcAcmDescriptor, UsbCdcCallManagementCapabilities, UsbCdcCallManagementDescriptor, UsbCdcHeaderDescriptor, UsbCdcUnionDescriptor, UsbCdcVersion};
 
 const VID: u16 = 0x1209;
 const PID: u16 = 0xbadb;
@@ -65,6 +66,11 @@ static CONFIGURATION_DESCRIPTOR: ConstStaticCell<[u8; 64]> = ConstStaticCell::ne
 static SERIAL_HANDLER_POOL: ConstStaticCell<RcPool<SerialHandlerInner, 1>> =
 	ConstStaticCell::new(RcPool::new());
 static SERIAL_HANDLER: StaticCell<SerialHandler> = StaticCell::new();
+
+const USB_CDC_HEADER_DESCRIPTOR: UsbCdcHeaderDescriptor =
+	UsbCdcHeaderDescriptor::new(UsbCdcVersion::OneDotOne);
+const USB_CDC_ACM_DESCRIPTOR: UsbCdcAcmDescriptor =
+	UsbCdcAcmDescriptor::new(UsbCdcAcmCapabilities::SupportsLineCoding);
 
 #[embassy_executor::task]
 pub async fn usbTask
@@ -138,6 +144,26 @@ pub async fn usbTask
 		100
 	);
 
+	// Pair in the CDC descriptors needed to describe this interface as USB CDC ACM and how
+	serialControlInterface.descriptor(USB_CDC_HEADER_DESCRIPTOR.descriptorType(), &USB_CDC_HEADER_DESCRIPTOR.toBytes());
+	let usbCdcCallManagementDescriptor = UsbCdcCallManagementDescriptor::new
+	(
+		UsbCdcCallManagementCapabilities::none(),
+		serialControlInterface.interface_number().0 + 1
+	);
+	serialControlInterface.descriptor
+	(
+		usbCdcCallManagementDescriptor.descriptorType(),
+		&usbCdcCallManagementDescriptor.toBytes(),
+	);
+	serialControlInterface.descriptor(USB_CDC_ACM_DESCRIPTOR.descriptorType(), &USB_CDC_ACM_DESCRIPTOR.toBytes());
+	let usbCdcUnionDescriptor = UsbCdcUnionDescriptor::new
+	(
+		serialControlInterface.interface_number(),
+		serialControlInterface.interface_number().0 + 1,
+	);
+	serialControlInterface.descriptor(usbCdcUnionDescriptor.descriptorType(), &usbCdcUnionDescriptor.toBytes());
+
 	// Followed by the data interface
 	let mut serialDataInterface = serialFunction.interface();
 	let mut serialDataInterface = serialDataInterface.alt_setting
@@ -175,8 +201,8 @@ pub async fn usbTask
 async fn deviceConfig() -> DeviceConfig<'static>
 {
 	let mut config = DeviceConfig::new(VID, PID);
-	// We're a USB 2.1 (USB 3 compliance over USB LS/FS/HS) device, meaning we can have BOS
-	config.bcd_usb = UsbVersion::TwoOne;
+	// We're a USB 2.0 device
+	config.bcd_usb = UsbVersion::Two;
 	// Device is a misc IAD-based device
 	config.device_class = USB_CLASS_MISC;
 	config.device_sub_class = MISC_SUBCLASS_COMMON;
