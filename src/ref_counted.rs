@@ -2,12 +2,11 @@
 
 use core::
 {
-	cell::{Cell, Ref, RefCell, RefMut},
-	hint,
-	marker::PhantomData,
-	mem::MaybeUninit,
-	ptr::{self, NonNull},
+	cell::{Cell, UnsafeCell}, hint, marker::PhantomData, mem::MaybeUninit, ops::{Deref, DerefMut}, ptr::{self, NonNull}
 };
+
+type BorrowCounter = isize;
+const UNUSED: BorrowCounter = 0;
 
 /// This represents a pool capable of holding N T's
 pub struct RcPool<T: Sized, const N: usize>
@@ -44,7 +43,8 @@ impl<T: Sized, const N: usize> RcPool<T, N>
 					RcInner
 					{
 						refCount: Cell::new(1),
-						value: RefCell::new(value),
+						borrowCount: Cell::new(UNUSED),
+						value: UnsafeCell::new(value),
 					}
 				);
 			Some(Rc::fromInner(inner))
@@ -56,7 +56,8 @@ impl<T: Sized, const N: usize> RcPool<T, N>
 struct RcInner<T: Sized>
 {
 	refCount: Cell<usize>,
-	value: RefCell<T>,
+	borrowCount: Cell<BorrowCounter>,
+	value: UnsafeCell<T>,
 }
 
 impl<T> RcInner<T>
@@ -123,13 +124,31 @@ impl<T: Sized> Rc<T>
 	#[inline]
 	pub fn borrow(&self) -> Ref<'_, T>
 	{
-		self.inner().value.borrow()
+		let value = unsafe { NonNull::new_unchecked(self.inner().value.get()) };
+		Ref { value, marker: PhantomData }
 	}
 
 	#[inline]
 	pub fn borrowMut(&self) -> RefMut<'_, T>
 	{
-		self.inner().value.borrow_mut()
+		match self.tryBorrowMut()
+		{
+			Ok(mutRef) => mutRef,
+			Err(_) => panic!("Rc already mutably borrowed"),
+		}
+	}
+
+	pub fn tryBorrowMut(&self) -> Result<RefMut<'_, T>, BorrowMutError>
+	{
+		match BorrowRefMut::new(&self.inner().borrowCount)
+		{
+			Some(borrow) =>
+			{
+				let value = unsafe { NonNull::new_unchecked(self.inner().value.get()) };
+				Ok(RefMut { value, _borrow: borrow, marker: PhantomData })
+			},
+			None => Err(BorrowMutError),
+		}
 	}
 }
 
@@ -161,5 +180,83 @@ impl<T: Sized> Drop for Rc<T>
 				ptr::drop_in_place(&mut (*self.ptr.as_ptr()).value);
 			}
 		}
+	}
+}
+
+pub struct Ref<'b, T: ?Sized + 'b>
+{
+	value: NonNull<T>,
+	marker: PhantomData<&'b T>,
+}
+
+impl<T: ?Sized> Deref for Ref<'_, T>
+{
+	type Target = T;
+
+	#[inline]
+	fn deref(&self) -> &T
+	{
+		unsafe { self.value.as_ref() }
+	}
+}
+
+pub struct BorrowMutError;
+
+pub struct RefMut<'b, T: ?Sized + 'b>
+{
+	value: NonNull<T>,
+	_borrow: BorrowRefMut<'b>,
+	marker: PhantomData<&'b T>,
+}
+
+impl<T: ?Sized> Deref for RefMut<'_, T>
+{
+	type Target = T;
+
+	#[inline]
+	fn deref(&self) -> &T
+	{
+		unsafe { self.value.as_ref() }
+	}
+}
+
+impl<T: ?Sized> DerefMut for RefMut<'_, T>
+{
+	fn deref_mut(&mut self) -> &mut T
+	{
+		unsafe { self.value.as_mut() }
+	}
+}
+
+struct BorrowRefMut<'b>
+{
+	borrow: &'b Cell<BorrowCounter>,
+}
+
+impl<'b> BorrowRefMut<'b>
+{
+	#[inline]
+	const fn new(borrow: &'b Cell<BorrowCounter>) -> Option<Self>
+	{
+		match borrow.get()
+		{
+			UNUSED =>
+			{
+				borrow.replace(UNUSED - 1);
+				Some(BorrowRefMut { borrow })
+			},
+			_ => None,
+		}
+	}
+}
+
+impl Drop for BorrowRefMut<'_>
+{
+	#[inline]
+	fn drop(&mut self)
+	{
+		let borrow = self.borrow.get();
+		debug_assert!(borrow < UNUSED);
+		self.borrow.replace(borrow + 1);
 	}
 }
