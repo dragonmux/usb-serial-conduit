@@ -55,7 +55,7 @@ bind_interrupts!
 );
 
 // Buffer that must be large enough to receive any possible packet we can dequeue
-static RX_BUFFER: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
+static RX_BUFFER: ConstStaticCell<[u8; 192]> = ConstStaticCell::new([0u8; 192]);
 // Buffer that must be large enough to hold any possible control packet (in or out) that might be generated
 static CONTROL_BUFFER: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0u8; 64]);
 // Buffer that must be large enough to hold the completed configuration descriptor
