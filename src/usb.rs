@@ -2,7 +2,7 @@
 
 use core::cell::{OnceCell, RefCell};
 use alloc::boxed::Box;
-use defmt::error;
+use defmt::{debug, error, info};
 use embassy_futures::select::{Either4, select4};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
@@ -324,6 +324,7 @@ impl SerialHandlerInner
 					let notification = CdcNotification::SerialState.asMessage(
 						&mut notification, self.controlInterface
 					);
+					debug!("Posting serial state notification {}", notification);
 
 					self.notificationEndpoint.get()
 						.expect("Notification endpoint should be valid at this point")
@@ -339,6 +340,7 @@ impl SerialHandlerInner
 					{
 						Ok(byteCount) =>
 						{
+							info!("USB -> Serial buffer: {}", &usbSerialReceiveBuffer[0..byteCount]);
 							let mut buffer = unsafe
 							{
 								Box::new_zeroed_slice(byteCount)
@@ -398,6 +400,7 @@ impl SerialHandlerInner
 		{
 			TransmitRequest::Data(data) =>
 			{
+				debug!("Transmitting buffer {}", data.as_ref());
 				let mut transmitEndpoint = self.transmitEndpoint
 					.get()
 					.expect("Transmit endpoint should be valid at this point")
@@ -478,6 +481,7 @@ impl Handler for SerialHandler
 		{
 			CdcRequest::GetLineCoding =>
 			{
+				debug!("Handling get line coding message");
 				self.inner.borrow().encodingToData(data)
 					.map(|length| control::InResponse::Accepted(&data[0..length]))
 			}
@@ -498,11 +502,13 @@ impl Handler for SerialHandler
 		{
 			CdcRequest::SetControlLineState =>
 			{
+				debug!("Handling set control line state message ({})", packet.value);
 				self.inner.borrowMut().controlLineState(packet.value);
 				Some(control::OutResponse::Accepted)
 			}
 			CdcRequest::SetLineCoding =>
 			{
+				debug!("Handling set line coding message");
 				self.inner.borrowMut().encodingFromData(data)
 					.map(|()| control::OutResponse::Accepted)
 			}

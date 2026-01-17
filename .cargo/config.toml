@@ -34,3 +34,6 @@ lto = 'fat'
 incremental = false
 # Do not use code generation unit splitting so we can get the best possible codegen
 codegen-units = 1
+
+[env]
+DEFMT_LOG = "debug"
