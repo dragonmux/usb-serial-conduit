@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use alloc::boxed::Box;
-use defmt::{debug, error, info};
+use defmt::{error, info};
 use embassy_embedded_hal::SetConfig;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::mode::Async;
@@ -99,9 +99,6 @@ async fn handleReceiveRequest(
 				.expect("Unable to set desired encoding state");
 		}
 		ReceiveRequest::Data(data) =>
-		{
-			debug!("Transmitting buffer {}", data.as_ref());
 			serialPort.write(&data).await.expect("Serial interface writes never fail")
-		}
 	}
 }

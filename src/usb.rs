@@ -370,8 +370,15 @@ async fn serialHandlerTask(
 					.write(notification).await
 					.expect("Endpoint in strange state");
 			}
-			Either4::Third(request) =>
-				handleTransmitRequest(&mut transmitEndpoint, request).await,
+			Either4::Third(request) => match request
+			{
+				TransmitRequest::Data(data) =>
+				{
+					transmitEndpoint
+						.write(&data).await
+						.expect("Endpoint in strange state")
+				}
+			}
 			Either4::Fourth(result) =>
 			{
 				match result
@@ -397,20 +404,6 @@ async fn serialHandlerTask(
 			}
 		}
 	}
-}
-
-async fn handleTransmitRequest(transmitEndpoint: &mut Endpoint<'static, In>, request: TransmitRequest)
-{
-	match request
-	{
-		TransmitRequest::Data(data) =>
-		{
-			debug!("Transmitting buffer {}", data.as_ref());
-			transmitEndpoint
-				.write(&data).await
-				.expect("Endpoint in strange state")
-		}
-	};
 }
 
 struct SerialHandler
