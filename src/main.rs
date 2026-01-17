@@ -6,7 +6,6 @@
 
 mod ref_counted;
 mod resources;
-mod run_multiple;
 mod serial;
 mod serial_number;
 mod types;
@@ -58,9 +57,16 @@ async fn main(spawner: Spawner)
 	readSerialNumber();
 
 	// Spawn the task to handle USB for us
-	spawner.spawn(usbTask(
-		resources.usb, TRANSMIT_CHANNEL.receiver(), RECEIVE_CHANNEL.sender()
-	).unwrap());
+	spawner.spawn
+	(
+		usbTask
+		(
+			resources.usb,
+			TRANSMIT_CHANNEL.receiver(),
+			RECEIVE_CHANNEL.sender(),
+			spawner.clone()
+		).unwrap()
+	);
 	// And then the one to handle serial
 	spawner.spawn(serialTask(
 		resources.uart, TRANSMIT_CHANNEL.sender(), RECEIVE_CHANNEL.receiver()

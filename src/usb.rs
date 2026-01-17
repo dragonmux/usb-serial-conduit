@@ -3,6 +3,7 @@
 use core::cell::{OnceCell, RefCell};
 use alloc::boxed::Box;
 use defmt::{debug, error, info};
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either4, select4};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_stm32::usb::{Config as OtgConfig, Driver, InterruptHandler};
@@ -10,13 +11,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_usb::control::{self, Request};
-use embassy_usb::driver::{Direction, EndpointAddress, EndpointIn, EndpointOut};
+use embassy_usb::driver::{Direction, Endpoint as EndpointTrait, EndpointAddress, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config as DeviceConfig, Handler, UsbVersion};
 use embassy_usb_synopsys_otg::{Endpoint, In, Out};
 use static_cell::{ConstStaticCell, StaticCell};
 use crate::resources::UsbResources;
-use crate::run_multiple::RunTwo;
 use crate::serial_number::serialNumber;
 use crate::types::{ReceiveRequest, SerialEncoding, TransmitRequest};
 use crate::ref_counted::{Rc, RcPool};
@@ -78,6 +78,7 @@ pub async fn usbTask
 	usb: UsbResources,
 	transmitChannel: Receiver<'static, CriticalSectionRawMutex, TransmitRequest, 1>,
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
+	spawner: Spawner,
 )
 {
 	let mut config = OtgConfig::default();
@@ -186,15 +187,18 @@ pub async fn usbTask
 	);
 
 	// Set up the endpoints against our serial handler
-	serialHandler.endpoints(serialNotification, serialDataTx, serialDataRx);
+	serialHandler.notificationEndpoint(serialNotification);
 	// Drop our reference to the function so the builder can work
 	drop(serialFunction);
 	// Register the serial handler so we can deal with CDC ACM state requests
 	builder.handler(serialHandler);
 
+	// Spin up the serial handler task
+	spawner.spawn(serialHandlerTask(serialHandlerInner, serialDataTx, serialDataRx).unwrap());
+
 	// Turn the completed builder into a USB device and run it
 	let mut usbDevice = builder.build();
-	RunTwo::new(usbDevice.run(), serialHandlerInner.borrow().run()).await;
+	usbDevice.run().await;
 }
 
 // Compile-time set up the device descriptor for this
@@ -288,94 +292,22 @@ struct SerialHandlerInner
 	receiveChannel: Sender<'static, CriticalSectionRawMutex, ReceiveRequest, 1>,
 	encoding: RefCell<SerialEncoding>,
 	notificationEndpoint: OnceCell<RefCell<Endpoint<'static, In>>>,
-	transmitEndpoint: OnceCell<RefCell<Endpoint<'static, In>>>,
-	receiveEndpoint: OnceCell<RefCell<Endpoint<'static, Out>>>,
 	encodingUpdate: Signal<CriticalSectionRawMutex, SerialEncoding>,
 	stateUpdate: Signal<CriticalSectionRawMutex, u16>,
 }
 
 impl SerialHandlerInner
 {
-	pub async fn run(&self) -> !
-	{
-		let mut usbSerialReceiveBuffer = [0u8; 64];
-		let mut receiveEndpoint = self.receiveEndpoint
-				.get()
-				.expect("Receive endpoint should be valid at this point")
-				.borrow_mut();
-
-		loop
-		{
-			let encodingFuture = self.encodingUpdate.wait();
-			let stateFuture = self.stateUpdate.wait();
-			let transmitFuture = self.transmitChannel.receive();
-			let usbSerialReceiveFuture = receiveEndpoint
-				.read(&mut usbSerialReceiveBuffer);
-			match select4(encodingFuture, stateFuture, transmitFuture, usbSerialReceiveFuture).await
-			{
-				Either4::First(encoding) =>
-				{
-					self.encoding.replace(encoding);
-					self.receiveChannel.send(ReceiveRequest::ChangeEncoding(encoding)).await;
-				},
-				Either4::Second(_) =>
-				{
-					let mut notification = [0; 16];
-					let notification = CdcNotification::SerialState.asMessage(
-						&mut notification, self.controlInterface
-					);
-					debug!("Posting serial state notification {}", notification);
-
-					self.notificationEndpoint.get()
-						.expect("Notification endpoint should be valid at this point")
-						.borrow_mut()
-						.write(notification).await
-						.expect("Endpoint in strange state");
-				}
-				Either4::Third(request) =>
-					self.handleTransmitRequest(request).await,
-				Either4::Fourth(result) =>
-				{
-					match result
-					{
-						Ok(byteCount) =>
-						{
-							info!("USB -> Serial buffer: {}", &usbSerialReceiveBuffer[0..byteCount]);
-							let mut buffer = unsafe
-							{
-								Box::new_zeroed_slice(byteCount)
-									.assume_init()
-							};
-							buffer.copy_from_slice(&usbSerialReceiveBuffer[0..byteCount]);
-							self.receiveChannel
-								.send(ReceiveRequest::Data(buffer))
-								.await;
-						},
-						Err(error) =>
-							error!("USB serial interface read failed, {}", error)
-					}
-				}
-			}
-		}
-	}
-
 	pub fn controlInterface(&mut self, controlInterface: InterfaceNumber)
 	{
 		self.controlInterface = controlInterface.0 as u16;
 	}
 
-	pub fn endpoints(
-		&mut self,
-		notificationEndpoint: Endpoint<'static, In>,
-		transmitEndpoint: Endpoint<'static, In>,
-		receiveEndpoint: Endpoint<'static, Out>,
-	)
+	pub fn notificationEndpoint(&mut self, notificationEndpoint: Endpoint<'static, In>)
 	{
 		self.notificationEndpoint
 			.set(RefCell::new(notificationEndpoint)).map_err(|_| ())
-			.and_then(|()| self.transmitEndpoint.set(RefCell::new(transmitEndpoint)).map_err(|_| ()))
-			.and_then(|()| self.receiveEndpoint.set(RefCell::new(receiveEndpoint)).map_err(|_| ()))
-			.expect("Endpoints already initialised")
+			.expect("Endpoint already initialised")
 	}
 
 	fn controlLineState(&mut self, state: u16)
@@ -393,25 +325,92 @@ impl SerialHandlerInner
 		SerialEncoding::fromData(data)
 			.map(|encoding| self.encodingUpdate.signal(encoding))
 	}
+}
 
-	async fn handleTransmitRequest(&self, request: TransmitRequest)
+#[embassy_executor::task]
+async fn serialHandlerTask(
+	serialHandler: Rc<SerialHandlerInner>,
+	mut transmitEndpoint: Endpoint<'static, In>,
+	mut receiveEndpoint: Endpoint<'static, Out>,
+)
+{
+	// Wait for the endpoints to become enabled
+	receiveEndpoint.wait_enabled().await;
+	let mut usbSerialReceiveBuffer = [0u8; 64];
+
+	loop
 	{
-		match request
+		let handler = serialHandler.borrow();
+		let encodingFuture = handler.encodingUpdate.wait();
+		let stateFuture = handler.stateUpdate.wait();
+		let transmitFuture = handler.transmitChannel.receive();
+		let usbSerialReceiveFuture = receiveEndpoint
+			.read(&mut usbSerialReceiveBuffer);
+		match select4(encodingFuture, stateFuture, transmitFuture, usbSerialReceiveFuture).await
 		{
-			TransmitRequest::Data(data) =>
+			Either4::First(encoding) =>
 			{
-				debug!("Transmitting buffer {}", data.as_ref());
-				let mut transmitEndpoint = self.transmitEndpoint
-					.get()
-					.expect("Transmit endpoint should be valid at this point")
-					.borrow_mut();
+				handler.encoding.replace(encoding);
+				handler.receiveChannel.send(ReceiveRequest::ChangeEncoding(encoding)).await;
+			},
+			Either4::Second(_) =>
+			{
+				let mut notification = [0; 16];
+				let notification = CdcNotification::SerialState.asMessage(
+					&mut notification, serialHandler.borrow().controlInterface
+				);
+				debug!("Posting serial state notification {}", notification);
 
-				transmitEndpoint
-					.write(&data).await
-					.expect("Endpoint in strange state")
+				serialHandler
+					.borrow()
+					.notificationEndpoint
+					.get()
+					.expect("Notification endpoint should be valid at this point")
+					.borrow_mut()
+					.write(notification).await
+					.expect("Endpoint in strange state");
 			}
-		};
+			Either4::Third(request) =>
+				handleTransmitRequest(&mut transmitEndpoint, request).await,
+			Either4::Fourth(result) =>
+			{
+				match result
+				{
+					Ok(byteCount) =>
+					{
+						info!("USB -> Serial buffer: {}", &usbSerialReceiveBuffer[0..byteCount]);
+						let mut buffer = unsafe
+						{
+							Box::new_zeroed_slice(byteCount)
+								.assume_init()
+						};
+						buffer.copy_from_slice(&usbSerialReceiveBuffer[0..byteCount]);
+						serialHandler
+							.borrow()
+							.receiveChannel
+							.send(ReceiveRequest::Data(buffer))
+							.await;
+					},
+					Err(error) =>
+						error!("USB serial interface read failed, {}", error)
+				}
+			}
+		}
 	}
+}
+
+async fn handleTransmitRequest(transmitEndpoint: &mut Endpoint<'static, In>, request: TransmitRequest)
+{
+	match request
+	{
+		TransmitRequest::Data(data) =>
+		{
+			debug!("Transmitting buffer {}", data.as_ref());
+			transmitEndpoint
+				.write(&data).await
+				.expect("Endpoint in strange state")
+		}
+	};
 }
 
 struct SerialHandler
@@ -437,8 +436,6 @@ impl SerialHandler
 				receiveChannel,
 				encoding: RefCell::new(SerialEncoding::default()),
 				notificationEndpoint: OnceCell::new(),
-				transmitEndpoint: OnceCell::new(),
-				receiveEndpoint: OnceCell::new(),
 				encodingUpdate: Signal::new(),
 				stateUpdate: Signal::new(),
 			}).expect("Rc pool should not be exhausted"),
@@ -450,14 +447,9 @@ impl SerialHandler
 		self.inner.borrowMut().controlInterface(controlInterface);
 	}
 
-	pub fn endpoints(
-		&self,
-		notificationEndpoint: Endpoint<'static, In>,
-		transmitEndpoint: Endpoint<'static, In>,
-		receiveEndpoint: Endpoint<'static, Out>,
-	)
+	pub fn notificationEndpoint(&self, notificationEndpoint: Endpoint<'static, In>)
 	{
-		self.inner.borrowMut().endpoints(notificationEndpoint, transmitEndpoint, receiveEndpoint);
+		self.inner.borrowMut().notificationEndpoint(notificationEndpoint);
 	}
 
 	pub fn inner(&self) -> Rc<SerialHandlerInner>
